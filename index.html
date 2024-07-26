@@ -41,7 +41,7 @@
         // Function to fetch data from Sanity
         async function fetchData() {
             try {
-                const query = '*[_type == "data-pemasangan-apk"]{_id, lokasiPemasangan, namaPenjaga, fotoEksternal, "foto": foto.asset->url, geometry, user-> {name}}';
+                const query = '*[_type == "data-pemasangan-apk"]{_id, lokasiPemasangan, province, regency, district, village, reverensiTim, namaPenjaga, fotoEksternal, "foto": foto.asset->url, geometry, user-> {name}}';
                 const data = await client.fetch(query);
                 console.log('Fetched data pemasangan:', data);
                 return data; // Return the fetched data
@@ -51,22 +51,102 @@
             }
         }
 
+        // Function to get name by ID from provided list
+        function getNameById(id, list) {
+            console.log('Searching for ID:', id);
+            console.log('List:', list);
+            
+            // Ensure the list and ID are in the correct format
+            if (!Array.isArray(list)) {
+                console.error('List is not an array:', list);
+                return 'Not Found';
+            }
+            
+            const item = list.find(item => item.id === id);
+            console.log('Found item:', item);
+            return item ? item.name : 'Not Found';
+        }
+
+        // Function to fetch geography data based on IDs
+        async function fetchGeographyData(ids) {
+            try {
+                // Fetch provinces
+                const provincesResponse = await fetch('https://www.emsifa.com/api-wilayah-indonesia/api/provinces.json');
+                const provinces = await provincesResponse.json();
+                console.log('Provinces:', provinces);
+
+                // Extract unique province IDs from the provided list
+                const provinceIds = [...new Set(ids.map(item => item.province))];
+                console.log('Province IDs:', provinceIds);
+                
+                // Fetch regencies for unique province IDs
+                const regenciesResponses = await Promise.all(provinceIds.map(id =>
+                    fetch(`https://www.emsifa.com/api-wilayah-indonesia/api/regencies/${id}.json`)
+                ));
+                const regenciesData = await Promise.all(regenciesResponses.map(res => res.json()));
+                const regencies = regenciesData.flat();
+                console.log('Regencies:', regencies);
+
+                // Extract unique regency IDs from the list
+                const regencyIds = [...new Set(ids.map(item => item.regency))];
+                console.log('Regency IDs:', regencyIds);
+                
+                // Fetch districts for unique regency IDs
+                const districtsResponses = await Promise.all(regencyIds.map(id =>
+                    fetch(`https://www.emsifa.com/api-wilayah-indonesia/api/districts/${id}.json`)
+                ));
+                const districtsData = await Promise.all(districtsResponses.map(res => res.json()));
+                const districts = districtsData.flat();
+                console.log('Districts:', districts);
+
+                // Extract unique district IDs from the list
+                const districtIds = [...new Set(ids.map(item => item.district))];
+                console.log('District IDs:', districtIds);
+                
+                // Fetch villages for unique district IDs
+                const villagesResponses = await Promise.all(districtIds.map(id =>
+                    fetch(`https://www.emsifa.com/api-wilayah-indonesia/api/villages/${id}.json`)
+                ));
+                const villagesData = await Promise.all(villagesResponses.map(res => res.json()));
+                const villages = villagesData.flat();
+                console.log('Villages:', villages);
+
+                return { provinces, regencies, districts, villages };
+            } catch (error) {
+                console.error('Error fetching geography data:', error);
+                return { provinces: [], regencies: [], districts: [], villages: [] };
+            }
+        }
+
         // Function to initialize Leaflet map with fetched data
         async function initializeMap() {
-            const data = await fetchData(); // Fetch data asynchronously
+            const data = await fetchData(); // Fetch data pemasangan
 
-            if (!data) {
+            if (!data || data.length === 0) {
                 console.error('Failed to fetch data');
                 return;
             }
 
-            // Initialize Leaflet map
-            var map = L.map('map').setView([-8.686231, 116.106701], 13); // Set initial map view
+            // Extract IDs from the fetched data
+            const ids = data.map(item => ({
+                province: item.province,
+                regency: item.regency,
+                district: item.district,
+                village: item.village
+            }));
+            console.log('IDs:', ids);
 
-            // Add OpenStreetMap as base layer
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            }).addTo(map);
+            // Fetch dynamic geography data based on IDs
+            const { provinces, regencies, districts, villages } = await fetchGeographyData(ids);
+
+            // Function to get name by ID from provided list
+            function getNameById(id, list) {
+                console.log('Searching for ID:', id);
+                console.log('List:', list);
+                const item = list.find(item => item.id === id);
+                console.log('Found item:', item);
+                return item ? item.name : 'Not Found';
+            }
 
             // Prepare GeoJSON features array
             const geoJsonFeatures = data.map(item => ({
@@ -78,11 +158,24 @@
                 properties: {
                     _id: item._id,
                     lokasiPemasangan: item.lokasiPemasangan,
+                    province: getNameById(item.province, provinces),
+                    regency: getNameById(item.regency, regencies),
+                    district: getNameById(item.district, districts),
+                    village: getNameById(item.village, villages),
                     namaPenjaga: item.namaPenjaga,
+                    reverensiTim: item.reverensiTim,
                     foto: item.fotoEksternal,
                     user: item.user ? item.user.name : ''
                 }
             }));
+
+            // Initialize Leaflet map
+            var map = L.map('map').setView([-8.686231, 116.106701], 13);
+
+            // Add OpenStreetMap as base layer
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            }).addTo(map);
 
             // Create GeoJSON layer and add it to map
             L.geoJSON({
@@ -112,11 +205,15 @@
                     </tr>
                     <tr>
                         <th style="padding: 8px; border: 1px solid #ddd;">Lokasi Pemasangan</th>
-                        <td style="padding: 8px; border: 1px solid #ddd;">${feature.properties.lokasiPemasangan}</td>
+                        <td style="padding: 8px; border: 1px solid #ddd;">${feature.properties.lokasiPemasangan}, ${feature.properties.village}, ${feature.properties.district}, ${feature.properties.regency}</td>
                     </tr>
                     <tr>
                         <th style="padding: 8px; border: 1px solid #ddd;">Nama Penjaga APK</th>
                         <td style="padding: 8px; border: 1px solid #ddd;">${feature.properties.namaPenjaga}</td>
+                    </tr>
+                    <tr>
+                        <th style="padding: 8px; border: 1px solid #ddd;">Reverensi/TIM</th>
+                        <td style="padding: 8px; border: 1px solid #ddd;">${feature.properties.reverensiTim}</td>
                     </tr>
                     <tr>
                         <th style="padding: 8px; border: 1px solid #ddd;">Foto</th>
